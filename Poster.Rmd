@@ -1,0 +1,216 @@
+---
+title: "2021 Covid-19 Vaccine Completion Prediction <br> Using 2020 Presidential Election Vote Share"
+author: 
+    - name: John Markowicz 
+column_numbers: 3  
+output: 
+  posterdown::posterdown_html
+date: "2023-08-13"
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+# Research Question 
+ Was the 2020 presidential election vote share a reliable predictor for 2021 Covid-19 population vaccination completion percentage? The arrival of Covid-19 in the United States quickly became a major talking point during a turbulent 2020 presidential election cycle, and it seemed Republican and Democratic voters had conflicting strategies to deal with its presence. Florida and New York garnered constant media coverage for their contrasting approaches to lockdown procedures and vaccine mandates. I analyzed these states at the county level in order to create a reliable predictive model that can assess the variability in vote share and vaccine completion rate.  
+ 
+  To establish that the 2021 Covid-19 vaccine completion percentage was dependent on the 2020 presidential election at the national level, I performed a country-wide OLS regression. Key statistics measured were R-squared being .61, meaning 61% of the total variability in the dependent variable was explained by the model, and the Pearson’s correlation coefficient of .783 meaning a strong positive correlation between variables. For measuring prediction accuracy at the county level, I calculated the RMSE that evaluated predicted values within 8.27 percent of the observed values on average. The included box plot depicts the upper quartile range for majority Republican counties falling below the lower quartile range for Democratic majority counties again emphasizing that most Republican counties had lower vaccination completion rates than most Democratic counties. 
+  
+  I relied on CDC 2021 Covid-19 data and 2020 presidential election survey data at both county and state levels, and 2020 demographic data at the county level for New York and Florida
+  
+```{r countryplot,double_plot, out.width = "100%", fig.height = 3}
+
+library(tidyverse)
+library(lubridate)
+library(ggrepel)
+library(scales)
+library(ggpubr)
+library(ggthemes) 
+library(gridExtra)
+library(usmap)
+library(viridis)
+library(stargazer)
+library(car)
+library(broom)
+
+
+county_vac<-read_csv("COVID-19_Vaccinations_in_the_United_States_County.csv")
+elec<-readRDS("election_data_president_2012_2020.rds")
+elec<-elec%>%
+  filter(year==2020)
+country_vac<-read_csv('COVID-19_Vaccinations_in_the_United_States_Jurisdiction.csv')
+
+country_vac%>%
+  mutate(Date=as.Date(Date, format = "%m/%d/%Y"))%>%
+  filter(year(Date)==2021)%>%
+  rename(state=Location)%>%
+  filter(Date == as.Date('2021-12-31'))%>%
+  select(state,Series_Complete_Pop_Pct)->country_complete
+
+elec%>%
+  group_by(state)%>%
+  summarize(dem_pct = sum(dem_votes)/sum(dem_votes+rep_votes))%>%
+  left_join(country_complete, by = "state")%>%
+  mutate(dem_pct=dem_pct*100)-> countrywide
+  
+states_to_label <- c("NY", "FL","DC","WY","VT")
+subset_data <- countrywide[countrywide$state %in% states_to_label, ]
+
+ggplot(countrywide,aes(x=dem_pct, y = Series_Complete_Pop_Pct))+
+  geom_point()+
+  geom_point(data =subset_data,color = c("blue","red","blue","blue","red"))+
+  geom_label_repel(data = subset_data, aes(label=state),label.padding = 0.25)+
+  geom_smooth(method ="lm", se=F)+
+  labs(x ="Democratic Vote for President 2020", y="Population Completed Vaccine Series 2021", title = "National Vaccination Rates by Democrat Vote Share 2020")+
+  scale_x_continuous(breaks = c(20,40,60,80), labels = scales::percent_format(scale = 1)) +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  stat_regline_equation(label.x = 20, label.y=70)+
+  stat_cor(aes(label=..rr.label..),label.x=20,label.y=80)+
+  theme_classic2()->country_plot
+plot(country_plot + theme(axis.title.y=element_text(size=8)))
+
+country_cor<-cor(countrywide$dem_pct, countrywide$Series_Complete_Pop_Pct)
+reg <- lm(Series_Complete_Pop_Pct~dem_pct, countrywide)
+
+county_vac%>%
+  rename(county=Recip_County)%>%
+  rename(state =Recip_State)%>%
+  mutate(Date=as.Date(Date, format = "%m/%d/%Y"))%>%
+  filter(Date == as.Date('2021-12-31'))%>%
+  filter(state == "FL"| state == "NY")%>%
+  filter(county!='Unknown County')%>%
+  mutate(county = str_replace(county," County", ""))%>%
+  select(state,county,Series_Complete_Pop_Pct)->state_county
+
+
+elec%>%
+  rename(county=geographic_name, STATEFP = state_code, district = fips)%>%
+  filter(state == "FL"| state=="NY")%>%
+  group_by(county)%>%
+  mutate(dem_pct=sum(dem_votes)/sum(dem_votes+rep_votes))%>%
+  select(state,dem_pct, STATEFP,district) ->states_dem
+  
+
+ny_fl<-states_dem%>%
+  left_join(state_county, by=c("county","state"))%>%
+  mutate(dem_pct =dem_pct *100)
+
+ggplot(ny_fl, aes(x = dem_pct, y= Series_Complete_Pop_Pct))+
+  geom_point(aes(color = state))+
+  geom_smooth(method ="lm", se =F)+
+  labs(x ="Democratic Vote for President 2020", y="Population Completed Vaccine Series 2021")+
+  scale_x_continuous(breaks = c(20,40,60,80), labels = scales::percent_format(scale = 1)) +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  stat_cor(aes(label=..rr.label..),label.x=10,label.y=90)+
+  stat_regline_equation(label.x = 10, label.y=85)+
+  theme_classic2()->states_reg
+
+states_reg<-states_reg + theme(axis.title.y=element_text(size=8))
+
+reg1<- lm(Series_Complete_Pop_Pct ~ dem_pct, ny_fl )
+predictions1<- predict(reg1)
+rmse1<- sqrt(mean((ny_fl$Series_Complete_Pop_Pct - predictions1)^2))
+
+ny_fl%>%
+  mutate(party = ifelse(dem_pct >50, "Democrat", "Republican"))%>%
+  ggplot(aes(x =party, y= Series_Complete_Pop_Pct))+
+    geom_boxplot()+
+    labs(x = "County Majority Party 2020", y = "")+
+    scale_y_continuous(labels = scales::percent_format(scale = 1))+
+    theme_classic2()-> b_plot
+
+double_plot <-grid.arrange(states_reg, b_plot, nrow = 1, top = c("New York and Florida County Level Data"))
+
+```
+
+# Variation Between States 
+To visually distinguish between New York and Florida, I formulated a metric to weigh both independent and dependent variables for scaling each county's color scheme. I added both variables' percentages and performed a min-max normalization procedure in order to scale the metric between 0 and 1. This metric is used to effectively display the variation between New York and Florida in terms of their correlation between variables, measured at .77. Counties with a scaled color closer to 0  had a higher Republican vote share and a lower percentage of the population with completed vaccine series while counties with a color closer to 1 had a higher Democratic vote share and a higher percentage of the population with completed vaccine series.  
+ 
+```{r fl_map, ny_map, out.width = "100%", fig.height = 5.2}
+demo<-readRDS("demographic_data_by_county.rds")
+
+demo%>%
+  filter(state == "FL"| state=="NY")%>%
+  mutate(name = str_replace(name," County", ""))%>%
+  mutate(pop_nonwhite = pop - pop_white)%>%
+  rename(county=name)->states_demo
+
+ny_fl%>%
+  left_join(states_demo,by=c("state","county"))%>%
+  mutate(scale = Series_Complete_Pop_Pct + dem_pct)->final
+
+min_max_normalize <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+} 
+
+final$Normalized_Value <- min_max_normalize(final$scale)
+
+fl<-filter(final,state == "FL")
+ny<-filter(final,state == "NY")
+
+plot_usmap(data=fl,values = "Normalized_Value", include=c("FL"))+
+  scale_fill_gradient2(name = "",
+    limits = c(min(final$Normalized_Value), max(final$Normalized_Value)),
+    midpoint = median(final$Normalized_Value),
+    low = "red",
+    mid = "white",  
+    high = "blue")->fl_map
+
+
+plot_usmap(data=ny,values = "Normalized_Value", include=c("NY"))+
+  scale_fill_gradient2(guide = "none",
+    limits = c(min(final$Normalized_Value), max(final$Normalized_Value)),
+    midpoint = median(final$Normalized_Value),
+    low = "red",
+    mid = "white",  
+    high = "blue")->ny_map
+
+print(fl_map)
+print(ny_map)
+
+```
+
+
+# Controlling for Demographic Features
+Utilizing demographic data for Florida and New York, I built a multivariable regression model that improves upon the original simple OLS model. To carry out variable selection, I performed a stepwise regression using minimum AIC as the stopping criterion and later removed a few variables to reduce the model's complexity. To check for multicollinearity, I measured the variance inflation factor that showed most independent variables were close to 1 and none greater than 3 indicating that multicollinearity was not a factor. In order to account for overfitting, I split the data 70/30 between training and test sets and measured a regression model for each. After running models for each set multiple times, I discovered no discrepancies in the adjusted R-squared values as the test set closely approximated the training set's results suggesting overfitting was a nonissue. The regression coefficients show the change in the vaccine completion rate for each unit increase in a given independent variable while holding all other independent variables constant. The RMSE equated to 5.91, a significant decrease from the simple OLS model's RMSE of 8.27.   
+
+```{r reg_table, results = "asis",fig.height = 2}
+
+reg_final <- lm(Series_Complete_Pop_Pct~ dem_pct + median_housing_price + median_age +median_household_income , data = final)
+summary_table<-summary(reg_final)
+
+vif_vars<-vif(reg_final)
+
+custom_labels <- c("Democratic Vote Share", "Median Housing Price", "Median Age", "Median Household Income")
+coefficients <- summary_table$coefficients[, "Estimate"]
+
+stargazer(reg_final, type='html',
+          dep.var.labels=c("Pct. Pop. Completed Vaccination Series"), 
+          covariate.labels = custom_labels,
+          coef = list(coefficients),
+          single.row=TRUE)
+
+predictions2<- predict(reg_final)
+rmse2<-sqrt(mean((final$Series_Complete_Pop_Pct - predictions2)^2))
+
+train_indices <- sample(nrow(final), 0.7 * nrow(final))  
+train_data <- final[train_indices, ]
+test_data <- final[-train_indices, ]
+
+train_final <- lm(Series_Complete_Pop_Pct~ dem_pct + median_housing_price + median_age +median_household_income  , data = train_data)
+test_final <- lm(Series_Complete_Pop_Pct~ dem_pct + median_housing_price + median_age +median_household_income  , data = test_data)
+
+
+
+```
+# Conclusion
+My analysis depicts 2021 Covid-19 vaccine completion rates as a politicized topic that can be accurately predicted using the 2020 presidential vote share. While the variation in vaccination rates may have decreased in subsequent years, my analysis focuses on the initial divisive reaction. I demonstrate variance in the chosen features between New York and Florida and given the country-wide correlation, my analysis can be replicated to forecast Covid-19 vaccination completion rates between other states. I finish by improving upon the simple linear regression for Florida and New York county data by including demographic data, verifying the multivariable model's adequacy, and achieving both a lower RMSE and higher R-squared deeming the model's prediction as both reliable and accurate.   
+
+
+
+
